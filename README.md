@@ -28,7 +28,6 @@ Most multi-agent frameworks:
 
 ## Use Cases
 
-- **Medical workflow orchestration**: Route and sequence patient queries to a diagnostic assistant, then to a prescription auditor, and finally to a pharmacy formatter.
 - **Customer support routing**: Direct incoming queries to specialized agents (billing, technical, sales) and coordinate multi-step resolutions.
 - **Content generation pipelines**: Sieve user ideas through a researcher, copywriter, and editor sequence.
 - **Research assistants**: Coordinate multi-source fact checking and report writing.

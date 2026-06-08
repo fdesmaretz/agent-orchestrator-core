@@ -6,10 +6,10 @@
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 
-`agent-orchestrator-core` est un microservice stateless en Node.js/TypeScript.
-Il reçoit une requête utilisateur, demande à un agent "routeur" de choisir soit un agent simple spécialisé, soit un agent coordinateur capable de produire un plan JSON d'étapes exécutées séquentiellement en interne.
+`agent-orchestrator-core` is a stateless Node.js/TypeScript microservice.
+It receives user requests, queries a "router" agent to select either a specialized simple agent or a coordinator agent capable of producing a JSON plan of steps to be executed sequentially.
 
-Le service expose une API HTTP simple, sans persistance de session.
+The service exposes a simple HTTP API without session persistence.
 
 ## Why Agent Orchestrator Core?
 
@@ -28,6 +28,7 @@ Most multi-agent frameworks:
 
 ## Use Cases
 
+- **Medical workflow orchestration**: Route and sequence patient queries to a diagnostic assistant, then to a prescription auditor, and finally to a pharmacy formatter.
 - **Customer support routing**: Direct incoming queries to specialized agents (billing, technical, sales) and coordinate multi-step resolutions.
 - **Content generation pipelines**: Sieve user ideas through a researcher, copywriter, and editor sequence.
 - **Research assistants**: Coordinate multi-source fact checking and report writing.
@@ -36,134 +37,128 @@ Most multi-agent frameworks:
 
 ## Architecture
 
-Le service s'organise autour d'un routeur et d'agents simples ou coordinateurs exécutés en séquence.
+The service is organized around a router and simple or coordinator agents executed in sequence.
 
 ```mermaid
 graph TD
-    Client[Client Application] -->|POST /api/v1/execute| Orchestrator[Orchestrator Core]
-    Orchestrator -->|1. Choix de l'agent| Router[LLM Routeur]
-    Router -->|Nom de l'agent sélectionné| Orchestrator
+    Client["Client Application"] -->|POST /api/v1/execute| Orchestrator["Orchestrator Core"]
+    Orchestrator -->|"1. Choose Agent"| Router["Router LLM"]
+    Router -->|"Selected Agent Name"| Orchestrator
     
-    subgraph "Choix A: Routage Simple"
-        Orchestrator -->|2a. Exécution unique| AgentSimple[Agent Simple]
-        AgentSimple -->|"Texte final (ou Stream)"| Client
+    subgraph "Choice A: Simple Routing"
+        Orchestrator -->|"2a. Single Execution"| AgentSimple["Simple Agent"]
+        AgentSimple -->|"Final Text (or Stream)"| Client
     end
 
-    subgraph "Choix B: Orchestration Hiérarchique (isCoordinator: true)"
-        Orchestrator -->|2b. Exécution coordinateur| Coord[Agent Coordinateur]
-        Coord -->|Plan JSON d'étapes| Orchestrator
-        Orchestrator -->|3. Boucle d'exécution interne| Step1[Agent Étape 1]
-        Step1 -->|Résultats + Contextes| Step2["Agent Étape 2 (Dernière étape)"]
-        Step2 -->|"Streaming final (ou Texte)"| Client
+    subgraph "Choice B: Hierarchical Orchestration (isCoordinator: true)"
+        Orchestrator -->|"2b. Coordinator Execution"| Coord["Coordinator Agent"]
+        Coord -->|"Workflow Plan JSON"| Orchestrator
+        Orchestrator -->|"3. Internal execution loop"| Step1["Agent Step 1"]
+        Step1 -->|"Results + Contexts"| Step2["Agent Step 2 (Last Step)"]
+        Step2 -->|"Final Streaming (or Text)"| Client
     end
 ```
 
-## Fonctionnement
+## How it Works
 
-Chaque appel à `POST /api/v1/execute` (ou `/api/v1/execute/stream`) contient :
-- le texte utilisateur ;
-- un objet de contexte injecté dans les prompts ;
-- la configuration du routeur ;
-- la liste des agents disponibles.
+Each call to `POST /api/v1/execute` (or `/api/v1/execute/stream`) contains:
+- the user's input text;
+- a context object injected into the prompts;
+- the router's configuration;
+- the list of available agents.
 
-Flux d'exécution :
-1. Le payload est validé.
-2. Les variables `{{variable}}` sont injectées dans le prompt système du routeur à partir du `context`.
-3. Le routeur choisit un agent et produit un résumé court.
-4. **Si l'agent sélectionné est un agent simple** :
-   - La variable `{{router_summary}}` est injectée dans son prompt.
-   - L'agent répond directement au message de l'utilisateur (avec streaming temps réel en mode `/stream`).
-5. **Si l'agent sélectionné est un agent coordinateur** (`isCoordinator: true`) :
-   - Le coordinateur produit un plan d'action JSON (conforme au schéma `WorkflowPlanSchema`) contenant une suite d'étapes ordonnées.
-   - Le moteur d'orchestration exécute chaque étape séquentiellement en faisant appel à l'agent spécifié pour chaque étape.
-   - Les variables contextuelles (`{{router_summary}}` pour la consigne de l'étape et `{{parent_output}}` pour le résultat produit par l'étape précédente) sont injectées dynamiquement.
-   - Le résultat final de la dernière étape est renvoyé au client (avec streaming de la toute dernière étape en mode `/stream`).
+Execution flow:
+1. The payload is validated.
+2. The `{{variable}}` templates in the router's system prompt are replaced with values from the `context`.
+3. The router selects an agent and generates a short summary.
+4. **If the selected agent is a simple agent**:
+   - The variable `{{router_summary}}` is injected into its prompt.
+   - The agent responds directly to the user's message (with real-time streaming in `/stream` mode).
+5. **If the selected agent is a coordinator agent** (`isCoordinator: true`):
+   - The coordinator produces a JSON action plan (conforming to `WorkflowPlanSchema`) listing a series of ordered steps.
+   - The orchestrator engine executes each step sequentially, calling the specified agent for each step.
+   - Context variables (`{{router_summary}}` for the step instruction and `{{parent_output}}` for the result of the previous step) are dynamically injected.
+   - The final result of the last step is returned to the client (with real-time streaming of the final step in `/stream` mode).
 
-## Fonctionnalités réellement supportées
+## Key Features
 
-1. **Routeur multi-provider** : `openai`, `mistral` ou `local`.
-2. **Agents multi-provider** : chaque agent peut utiliser `openai`, `mistral` ou `local`.
-3. **Templating simple** : remplacement de variables `{{variable}}` dans les prompts système.
-4. **Sortie structurée conditionnelle pour le routeur** :
-   le service tente un routage via `response_format: json_schema` uniquement pour `openai` sans `baseUrl` personnalisée.
-5. **Fallback JSON-only** :
-   dans tous les autres cas, ou si l'appel structuré échoue, le routeur est réinterrogé avec une consigne demandant un objet JSON brut.
-6. **Stateless** : aucune session n'est conservée côté service.
-7. **Garde-fous optionnels** :
-   Bearer token côté API et allowlist de `baseUrl`.
+1. **Multi-Provider Router**: Use `openai`, `mistral`, or `local`.
+2. **Multi-Provider Agents**: Each agent can run on its own provider (`openai`, `mistral`, or `local`).
+3. **Simple Templating**: Replaces `{{variable}}` templates in system prompts with custom context.
+4. **Conditional Structured Output for the Router**: Uses `response_format: json_schema` (strict mode) only for official `openai` endpoints without a custom `baseUrl` to save latency.
+5. **JSON-only Fallback**: In all other cases (or if structured routing fails), queries the router with a prompt demanding a raw JSON object.
+6. **Stateless**: No session state is persisted on the service.
+7. **Optional Guardrails**: Bearer token authentication and base URL allowlist.
 
-## Variables d'environnement
+## Environment Variables
 
-Le service charge automatiquement un fichier `.env` à la racine si le fichier existe.
-En conteneur, les variables peuvent aussi être injectées directement.
+The service automatically loads a `.env` file at the root if it exists.
+In a container, variables can be injected directly as environment variables.
 
 ```env
-# Réseau
+# Network
 HOST=0.0.0.0
 PORT=3000
 NODE_ENV=development
 
-# Providers
+# LLM Providers
 OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx
 MISTRAL_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
 
-# Optionnel pour les endpoints locaux compatibles OpenAI
+# Optional for local OpenAI-compatible endpoints
 LOCAL_LLM_API_KEY=ollama
 
-# Sécurité API optionnelle
+# Optional API Security Token
 ORCHESTRATOR_API_TOKEN=change-me
 
-# Sécurité des baseUrl dynamiques
-# Si ENFORCE_BASE_URL_ALLOWLIST=true, toute baseUrl fournie dans le payload
-# pour un routeur ou un agent doit être présente dans ALLOWED_BASE_URLS.
+# Security: Dynamic Base URL Allowlist
+# If ENFORCE_BASE_URL_ALLOWLIST=true, any baseUrl provided in the payload
+# for a router or agent must be listed in ALLOWED_BASE_URLS.
 ENFORCE_BASE_URL_ALLOWLIST=false
 ALLOWED_BASE_URLS=http://localhost:11434/v1,https://api.mistral.ai/v1
 ```
 
-## Règles provider
+## Provider Rules
 
-- `openai` :
-  utilise `OPENAI_API_KEY`. `baseUrl` est optionnelle.
-- `mistral` :
-  utilise `MISTRAL_API_KEY`. `baseUrl` est optionnelle.
-  Si elle est absente, le service utilise `https://api.mistral.ai/v1`.
-- `local` :
-  utilise `LOCAL_LLM_API_KEY` si défini, sinon `ollama`.
-  `baseUrl` est obligatoire dans le payload.
+- `openai`:
+  Uses `OPENAI_API_KEY`. `baseUrl` is optional.
+- `mistral`:
+  Uses `MISTRAL_API_KEY`. `baseUrl` is optional.
+  If omitted, defaults to `https://api.mistral.ai/v1`.
+- `local`:
+  Uses `LOCAL_LLM_API_KEY` if defined, otherwise defaults to `ollama`.
+  `baseUrl` is mandatory in the payload.
 
-## Lancement local
+## Getting Started
 
-Installer les dépendances :
+### Local Setup
 
+Install dependencies:
 ```bash
 npm install
 ```
 
-Lancer le serveur de développement :
-
+Start the development server:
 ```bash
 npm start
 ```
+The service starts on `http://localhost:3000` by default.
 
-Le service démarre par défaut sur `http://localhost:3000`.
-
-## Build production
+### Production Build
 
 ```bash
 npm run build
 NODE_ENV=production node dist/server.js
 ```
 
-## Docker
+### Docker
 
-Construction :
-
+Build the image:
 ```bash
 docker build -t agent-orchestrator-core .
 ```
 
-Exécution :
-
+Run the container:
 ```bash
 docker run -d \
   --name agent-orchestrator \
@@ -172,12 +167,11 @@ docker run -d \
   agent-orchestrator-core
 ```
 
-## API
+## API Reference
 
 ### GET `/health`
 
-Réponse :
-
+Response:
 ```json
 {
   "status": "UP"
@@ -186,157 +180,208 @@ Réponse :
 
 ### POST `/api/v1/execute`
 
-Si `ORCHESTRATOR_API_TOKEN` est défini, envoyer aussi :
-
+If `ORCHESTRATOR_API_TOKEN` is configured, send the header:
 ```text
 Authorization: Bearer <token>
 ```
 
-Exemple :
+#### Simple Agent Routing Example
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/execute \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer change-me" \
   -d '{
-    "inputText": "Jʼai besoin dʼaide pour résoudre lʼéquation suivante: 3x + 5 = 20",
+    "inputText": "I need help solving this equation: 3x + 5 = 20",
     "context": {
-      "student_name": "Jean",
-      "grade": "4ème"
+      "student_name": "John",
+      "grade": "8th Grade"
     },
     "routerConfig": {
       "name": "Router",
       "model": "gpt-4o-mini",
       "provider": "openai",
-      "systemPrompt": "Tu es un agent routeur pour lʼélève {{student_name}} (classe: {{grade}}). Analyse son problème et choisis lʼagent le plus pertinent entre Maths et Francais.",
+      "systemPrompt": "You are a router agent for student {{student_name}} (grade: {{grade}}). Analyze the request and route to the most appropriate agent: [Math, English].",
       "temperature": 0
     },
     "agentsConfig": [
       {
-        "name": "Maths",
+        "name": "Math",
         "model": "gpt-4o-mini",
         "provider": "openai",
-        "systemPrompt": "Tu es un tuteur bienveillant en mathématiques pour {{student_name}} (classe de {{grade}}). Tu as reçu ce résumé de la demande : {{router_summary}}. Aide lʼélève pas à pas sans lui donner directement la réponse.",
+        "systemPrompt": "You are a friendly math tutor for {{student_name}} (grade: {{grade}}). You received this routing summary: {{router_summary}}. Help the student step-by-step without giving the answer directly.",
         "temperature": 0.4
       },
       {
-        "name": "Francais",
+        "name": "English",
         "model": "gpt-4o-mini",
         "provider": "openai",
-        "systemPrompt": "Tu es un professeur de français pour {{student_name}} (classe de {{grade}}). Tu as reçu ce résumé de la demande : {{router_summary}}. Aide lʼélève à comprendre les règles de grammaire et dʼorthographe associées.",
+        "systemPrompt": "You are an English teacher for {{student_name}} (grade: {{grade}}). You received this routing summary: {{router_summary}}. Help the student understand grammar and writing rules.",
         "temperature": 0.3
       }
     ]
   }'
 ```
 
-Réponse attendue :
-
+Expected Response:
 ```json
 {
-  "outputText": "Bonjour Jean ! Pour commencer, quelle opération peux-tu faire des deux côtés pour supprimer le +5 ?"
+  "outputText": "Hello John! Let's solve this together. What is the first step to isolate the x term? What operation can we apply to both sides to remove the +5?"
 }
 ```
 
-### Exemple d'Orchestration Hiérarchique (Agence de Presse)
+#### Hierarchical Orchestration Example (Press Agency)
 
-Cet exemple met en évidence la puissance de l'orchestrateur. Un agent **Coordinateur-Presse** délègue et enchaîne le travail entre un **Chercheur**, un **Redacteur** et un **Traducteur** pour produire un article journalistique fini et traduit en anglais, le tout en une seule requête stateless.
+This example shows the power of the orchestrator. A **Coordinator-Press** agent delegates and chains the workflow across a **Researcher**, a **Writer**, and a **Translator** to produce a completed and translated news article in a single stateless request.
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/execute \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer change-me" \
   -d '{
-    "inputText": "Rédiger un court article sur la découverte de glace dʼeau sur Mars et le traduire en anglais.",
+    "inputText": "Write a short article about water ice discoveries on Mars and translate it to English.",
     "context": {
-      "editor_name": "LʼÉcho du Cosmos"
+      "editor_name": "Cosmic Chronicles"
     },
     "routerConfig": {
-      "name": "Directeur-Publication",
+      "name": "Editor-In-Chief",
       "model": "gpt-4o-mini",
       "provider": "openai",
-      "systemPrompt": "Tu es le directeur de publication de {{editor_name}}. Analyse la demande et oriente-la vers lʼagent compétent parmi [Coordinateur-Presse, Maths]. Pour toute rédaction journalistique, choisis Coordinateur-Presse.",
+      "systemPrompt": "You are the editor-in-chief of {{editor_name}}. Analyze the request and route it to the appropriate agent among [Coordinator-Press, Math]. For any writing tasks, choose Coordinator-Press.",
       "temperature": 0
     },
     "agentsConfig": [
       {
-        "name": "Coordinateur-Presse",
+        "name": "Coordinator-Press",
         "model": "gpt-4o-mini",
         "provider": "openai",
-        "systemPrompt": "Tu es le coordinateur de lʼagence de presse. Crée un plan dʼaction JSON en 3 étapes pour répondre à la demande de lʼutilisateur. Tu dois utiliser obligatoirement lʼagent Chercheur en premier, puis lʼagent Redacteur, puis lʼagent Traducteur. Retourne uniquement ce format JSON : {\"steps\": [{\"agent\": \"Chercheur\", \"instruction\": \"Collecter 3 faits marquants sur la glace dʼeau sur Mars\"}, {\"agent\": \"Redacteur\", \"instruction\": \"Rédiger un article journalistique de 2 paragraphes basé sur les faits\"}, {\"agent\": \"Traducteur\", \"instruction\": \"Traduire lʼarticle en anglais\"}]}",
+        "systemPrompt": "You are the press coordinator. Create a 3-step action plan in JSON to fulfill the user request. You must run the Researcher agent first, then the Writer agent, then the Translator agent. Return only this JSON format: {\"steps\": [{\"agent\": \"Researcher\", \"instruction\": \"Collect 3 key facts about water ice on Mars\"}, {\"agent\": \"Writer\", \"instruction\": \"Write a 2-paragraph news article based on the facts\"}, {\"agent\": \"Translator\", \"instruction\": \"Translate the article to English\"}]}",
         "temperature": 0.1,
         "isCoordinator": true
       },
       {
-        "name": "Chercheur",
+        "name": "Researcher",
         "model": "gpt-4o-mini",
         "provider": "openai",
-        "systemPrompt": "Tu es chercheur pour {{editor_name}}. Ta consigne : {{router_summary}}. Liste les faits sous forme de puces.",
+        "systemPrompt": "You are a researcher for {{editor_name}}. Your instruction: {{router_summary}}. List findings as bullet points.",
         "temperature": 0.2
       },
       {
-        "name": "Redacteur",
+        "name": "Writer",
         "model": "gpt-4o-mini",
         "provider": "openai",
-        "systemPrompt": "Tu es rédacteur pour {{editor_name}}. Ta consigne : {{router_summary}}. Rédige lʼarticle en te basant exclusivement sur les données du chercheur : {{parent_output}}.",
+        "systemPrompt": "You are a journalist for {{editor_name}}. Your instruction: {{router_summary}}. Write the article based strictly on these facts: {{parent_output}}.",
         "temperature": 0.5
       },
       {
-        "name": "Traducteur",
+        "name": "Translator",
         "model": "gpt-4o-mini",
         "provider": "openai",
-        "systemPrompt": "Tu es traducteur bilingue. Ta consigne : {{router_summary}}. Traduis le texte suivant en anglais : {{parent_output}}.",
+        "systemPrompt": "You are a translator. Your instruction: {{router_summary}}. Translate the following text to English: {{parent_output}}.",
         "temperature": 0.1
       }
     ]
   }'
 ```
 
-Réponse finale attendue (l'article traduit en anglais issu de la séquence d'agents) :
-
+Expected Response (final article translated to English):
 ```json
 {
   "outputText": "Water Ice Discovered on Mars!\n\nRecent scientific findings have confirmed the presence of water ice just beneath the Martian surface. This discovery opens new possibilities for future crewed missions, as this ice could potentially be harvested for drinking water and fuel production.\n\nFurthermore, the ice sheets provide a geological record of Mars' climate history, helping scientists understand the planet's past habitability. Excitement is building within the space community as researchers plan further exploration of these ice-rich regions."
 }
 ```
 
+#### LLM-as-a-Judge Evaluation Example
+
+This example demonstrates the "LLM-as-a-Judge" pattern. A **Judge-Coordinator** creates a sequential workflow where a **Writer** generates content, and a **Critic** evaluates the generated content based on specific criteria before returning the final scorecard.
+
+```bash
+curl -X POST http://localhost:3000/api/v1/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer change-me" \
+  -d '{
+    "inputText": "Draft a short pitch for a new AI coding assistant.",
+    "context": {
+      "evaluation_rubric": "Clarity of value proposition, conciseness, and presence of a call to action."
+    },
+    "routerConfig": {
+      "name": "Router",
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "systemPrompt": "You are a router. Route this request to the Judge-Coordinator.",
+      "temperature": 0
+    },
+    "agentsConfig": [
+      {
+        "name": "Judge-Coordinator",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "systemPrompt": "You are a coordinator. Create a 2-step plan: Step 1 uses the agent \"Writer\" to draft the pitch. Step 2 uses the agent \"Critic\" to evaluate the draft. Return only this JSON structure: {\"steps\": [{\"agent\": \"Writer\", \"instruction\": \"Write a 1-paragraph elevator pitch for the AI coding assistant\"}, {\"agent\": \"Critic\", \"instruction\": \"Evaluate the pitch using criteria: {{evaluation_rubric}}\"}]}",
+        "temperature": 0.1,
+        "isCoordinator": true
+      },
+      {
+        "name": "Writer",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "systemPrompt": "You are a marketing copywriter. Write a 1-paragraph pitch based on the instruction: {{router_summary}}.",
+        "temperature": 0.7
+      },
+      {
+        "name": "Critic",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "systemPrompt": "You are a senior editor acting as a judge. Read the pitch draft: {{parent_output}}. Grade it based on: {{router_summary}}. Output a score out of 10, explain your reasoning, and list specific feedback.",
+        "temperature": 0.2
+      }
+    ]
+  }'
+```
+
+Expected Response:
+```json
+{
+  "outputText": "### Evaluation Score: 9/10\n\n**Reasoning:**\n- **Clarity of value proposition:** Excellent. The pitch clearly highlights how the assistant solves developers' bottlenecks.\n- **Conciseness:** Very good. It fits into a single, punchy paragraph.\n- **Call to action:** Present and clear.\n\n**Suggestions for improvement:**\n- Consider making the call to action slightly more urgent (e.g., adding 'Get started free today')."
+}
+```
+
 ### POST `/api/v1/execute/stream`
 
-Identique à `/api/v1/execute` mais renvoie la réponse sous forme de flux **Server-Sent Events (SSE)**.
+Identical to `/api/v1/execute` but returns the response as a **Server-Sent Events (SSE)** stream.
 
-En-têtes SSE générés :
+SSE Headers:
 - `Content-Type: text/event-stream`
 - `Cache-Control: no-cache`
 - `Connection: keep-alive`
 
-Types d'événements (events) retournés :
-1. `event: status` : envoyé dès que la phase de routage est terminée. Indique l'agent sélectionné et le résumé.
+Event types returned:
+1. `event: status`: Sent as soon as the routing phase completes. Indicates the selected agent and the summary.
    ```json
    {
-     "selectedAgent": "Maths",
-     "summary": "Résolution d'équation"
+     "selectedAgent": "Math",
+     "summary": "Equation solving help"
    }
    ```
-2. `event: token` : fragments de texte envoyés au fil de l'eau par l'agent.
+2. `event: token`: Text fragments streamed in real-time by the active agent.
    ```json
    {
-     "text": "Bonjour"
+     "text": "Hello"
    }
    ```
-3. `event: done` : indique la fin de la génération.
+3. `event: done`: Indicates the stream has finished.
    ```text
    [DONE]
    ```
-4. `event: error` : si une erreur survient au milieu du flux (après l'envoi des en-têtes).
+4. `event: error`: Sent if an error occurs mid-stream (after headers are sent).
    ```json
    {
-     "message": "Description de l'erreur"
+     "message": "Error details"
    }
    ```
 
-*Note* : Si une erreur survient avant le début de la génération (ex: erreur de routage ou clé API manquante), l'API renvoie directement une réponse HTTP `500 Internal Server Error` au format JSON classique.
+*Note*: If an error occurs before streaming starts (e.g., routing failure or missing API key), the API returns a standard `500 Internal Server Error` JSON payload.
 
-## Payload
+## Payload Structure
 
 ```json
 {
@@ -365,44 +410,40 @@ Types d'événements (events) retournés :
 }
 ```
 
-Contraintes validées côté API :
-- `inputText` est obligatoire.
-- `context` doit être un objet.
-- `routerConfig` est obligatoire.
-- `agentsConfig` doit contenir au moins un agent.
-- les noms d'agents doivent être uniques.
-- `baseUrl`, si fournie, doit être une URL valide.
-- `baseUrl` est obligatoire pour `local`.
-- `temperature` doit être comprise entre `0` et `2`.
-- `isCoordinator` est un booléen optionnel (par défaut `false`). Si activé, le service s'attend à ce que l'agent retourne un plan JSON et l'exécutera sous forme de workflow séquentiel interne.
+API Validation Constraints:
+- `inputText` is required.
+- `context` must be an object.
+- `routerConfig` is required.
+- `agentsConfig` must contain at least one agent configuration.
+- Agent names must be unique.
+- `baseUrl`, if provided, must be a valid URL.
+- `baseUrl` is mandatory when `provider` is `local`.
+- `temperature` must be between `0` and `2`.
+- `isCoordinator` is an optional boolean (defaulting to `false`). If enabled, the service expects the agent to return a JSON workflow plan, which it will then execute sequentially.
 
-## Comportement de routage
+## Routing Behavior
 
-Le routeur doit retourner un objet JSON avec cette forme :
+The router must return a JSON object with the following shape:
 
 ```json
 {
-  "targetAgent": "NomDeLAgent",
-  "summary": "Résumé court"
+  "targetAgent": "AgentName",
+  "summary": "Short summary"
 }
 ```
 
-Notes utiles :
-- `targetAgent` doit correspondre à un nom présent dans `agentsConfig`.
-- la correspondance du nom de l'agent est tolérante à la casse ;
-- si le routeur retourne du JSON entouré de balises Markdown, le service tente d'extraire l'objet JSON.
+Useful Notes:
+- `targetAgent` must match a name defined in `agentsConfig`.
+- Agent name matching is case-insensitive.
+- If the router returns JSON wrapped in Markdown code fences, the service automatically extracts the JSON object.
 
-## Gestion des erreurs
+## Error Handling
 
-- `400 Bad Request` :
-  payload invalide.
-- `401 Unauthorized` :
-  token Bearer manquant ou invalide quand `ORCHESTRATOR_API_TOKEN` est configuré.
-- `500 Internal Server Error` :
-  erreur provider, erreur de routage ou problème de configuration.
+- `400 Bad Request`: Invalid payload.
+- `401 Unauthorized`: Missing or invalid Bearer token when `ORCHESTRATOR_API_TOKEN` is configured.
+- `500 Internal Server Error`: Provider error, routing error, or configuration issue.
 
-En environnement non production, la réponse `500` inclut un champ `details`.
-En `production`, la réponse reste volontairement plus générique.
+In non-production environments, the `500` error response includes a `details` field. In `production` mode, the error response remains generic for security.
 
 ## Roadmap
 
